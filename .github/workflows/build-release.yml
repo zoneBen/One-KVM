@@ -1,19 +1,35 @@
 name: Build and Release
 
 on:
-  push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]  # 当创建标签时触发构建
-  pull_request:
-    branches: [ main, master ]
+  # 仅手动触发：构建完成后直接创建 Release 并上传产物。
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
+# 手动发布流程不自动取消，避免中断正在进行的 Release。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Generate release version
+        id: version
+        run: |
+          version="V$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${version}"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+
     strategy:
       matrix:
         target:
@@ -46,7 +62,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev libasound2-dev libudev-dev clang cmake protobuf-compiler
-        
+
         # Install target-specific packages if needed
         case "${{ matrix.target }}" in
           aarch64-unknown-linux-gnu)
@@ -73,31 +89,34 @@ jobs:
       run: |
         # Create dist directory
         mkdir -p dist
-        
+
         # Copy binaries
         cp target/${{ matrix.target }}/release/one-kvm dist/one-kvm-${{ matrix.target }}
         if [ -f target/${{ matrix.target }}/release-static/one-kvm ]; then
           cp target/${{ matrix.target }}/release-static/one-kvm dist/one-kvm-${{ matrix.target }}-static
         fi
-        
+
         # Make binaries executable
         chmod +x dist/*
-        
-        # Create version file
-        echo $(date +%Y%m%d)-$(git rev-parse --short HEAD) > dist/BUILD_INFO
+
+        # Write release version and build metadata
+        echo "Version: ${{ needs.prepare.outputs.version }}" > dist/BUILD_INFO
         echo "Target: ${{ matrix.target }}" >> dist/BUILD_INFO
-        echo "Version: $(git describe --tags --always --dirty)" >> dist/BUILD_INFO
+        echo "Commit: $(git rev-parse --short HEAD)" >> dist/BUILD_INFO
+        echo "${{ needs.prepare.outputs.version }}" > dist/VERSION
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: one-kvm-${{ matrix.target }}
         path: dist/
+        retention-days: 7
 
   release:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
 
     steps:
     - uses: actions/checkout@v4
@@ -115,7 +134,7 @@ jobs:
         for artifact in artifacts/*/; do
           target_name=$(basename "$artifact")
           echo "Processing $target_name"
-          
+
           # Create archive for each target
           cd "$artifact"
           tar -czf "../release_assets/one-kvm-$target_name.tar.gz" .
@@ -125,13 +144,15 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        name: Release ${{ github.ref_name }}
-        tag_name: ${{ github.ref_name }}
+        name: Release ${{ needs.prepare.outputs.version }}
+        tag_name: ${{ needs.prepare.outputs.version }}
+        target_commitish: ${{ github.sha }}
         draft: false
         prerelease: false
+        make_latest: 'true'
         files: release_assets/*
         body: |
-          ## One-KVM Release ${{ github.ref_name }}
+          ## One-KVM Release ${{ needs.prepare.outputs.version }}
 
           This release includes pre-built binaries for multiple platforms.
 
