@@ -130,16 +130,19 @@ jobs:
 
     - name: Prepare release assets
       run: |
-        mkdir -p release_assets
+        set -euo pipefail
+        assets_dir="$PWD/release_assets"
+        mkdir -p "$assets_dir"
+
         for artifact in artifacts/*/; do
           target_name=$(basename "$artifact")
           echo "Processing $target_name"
 
-          # Create archive for each target
-          cd "$artifact"
-          tar -czf "../release_assets/one-kvm-$target_name.tar.gz" .
-          cd ../..
+          # Artifact names already contain the one-kvm- prefix, so do not add it twice.
+          tar -czf "$assets_dir/${target_name}.tar.gz" -C "$artifact" .
         done
+
+        ls -lh "$assets_dir"
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
