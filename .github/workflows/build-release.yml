@@ -112,8 +112,48 @@ jobs:
         path: dist/
         retention-days: 7
 
+  deb:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Download binary artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Reconstruct target layout
+      run: |
+        set -euo pipefail
+        for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu armv7-unknown-linux-gnueabihf; do
+          mkdir -p "target/${target}/release"
+          cp "artifacts/one-kvm-${target}/one-kvm-${target}" "target/${target}/release/one-kvm"
+          chmod +x "target/${target}/release/one-kvm"
+        done
+
+    - name: Install packaging tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xz-utils
+
+    - name: Package deb
+      run: bash build/package-deb.sh
+
+    - name: Upload deb
+      uses: actions/upload-artifact@v4
+      with:
+        name: one-kvm-deb
+        path: target/debian/*.deb
+        if-no-files-found: error
+        retention-days: 7
+
   release:
-    needs: [prepare, build]
+    needs: [prepare, build, deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -138,6 +178,12 @@ jobs:
           target_name=$(basename "$artifact")
           echo "Processing $target_name"
 
+          if [ "$target_name" = "one-kvm-deb" ]; then
+            # Keep deb packages as release assets instead of tarring them.
+            cp "$artifact"/*.deb "$assets_dir"/
+            continue
+          fi
+
           # Artifact names already contain the one-kvm- prefix, so do not add it twice.
           tar -czf "$assets_dir/${target_name}.tar.gz" -C "$artifact" .
         done
@@ -157,18 +203,23 @@ jobs:
         body: |
           ## One-KVM Release ${{ needs.prepare.outputs.version }}
 
-          This release includes pre-built binaries for multiple platforms.
+          This release includes pre-built binaries and Debian packages for multiple platforms.
 
           ### Platforms
           - `x86_64-unknown-linux-gnu`: 64-bit x86 Linux (most desktop/server systems)
           - `aarch64-unknown-linux-gnu`: 64-bit ARM Linux (Raspberry Pi 4, ARM servers)
           - `armv7-unknown-linux-gnueabihf`: 32-bit ARM Linux (Raspberry Pi 3 and earlier)
 
+          ### Packages
+          - `one-kvm-<target>.tar.gz`: raw Linux binaries
+          - `one-kvm_*.deb`: Debian/Ubuntu packages (`amd64`, `arm64`, `armhf`)
+
           ### Installation
           1. Download the appropriate binary for your platform
           2. Extract: `tar -xzf one-kvm-*.tar.gz`
           3. Make executable: `chmod +x one-kvm-*`
           4. Run: `./one-kvm-* --help` to see available options
+          5. Debian/Ubuntu: `sudo dpkg -i one-kvm_*.deb`
 
           ### Changes
           Please see the commit history for detailed changes in this release.
