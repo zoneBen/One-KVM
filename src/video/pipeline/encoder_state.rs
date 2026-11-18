@@ -1,5 +1,7 @@
 use crate::error::{AppError, Result};
-use crate::video::codec::convert::{FrameScaler, MjpegToNv12Decoder, Nv12Converter, PixelConverter};
+use crate::video::codec::convert::{
+    FrameScaler, MjpegToNv12Decoder, Nv12Converter, PixelConverter,
+};
 use crate::video::codec::h264::{H264Config, H264Encoder, H264InputFormat};
 use crate::video::codec::h265::{H265Config, H265Encoder, H265InputFormat};
 use crate::video::codec::registry::{EncoderBackend, EncoderRegistry, VideoEncoderType};
@@ -68,7 +70,11 @@ impl HwMjpegPipeline {
         }
     }
 
-    pub(super) fn reconfigure(&mut self, bitrate_kbps: i32, gop: i32) -> std::result::Result<(), String> {
+    pub(super) fn reconfigure(
+        &mut self,
+        bitrate_kbps: i32,
+        gop: i32,
+    ) -> std::result::Result<(), String> {
         match self {
             Self::Ffmpeg(p) => p.reconfigure(bitrate_kbps, gop).map_err(|e| {
                 if e.is_empty() {

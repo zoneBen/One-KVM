@@ -5,15 +5,9 @@ pub mod ffmpeg;
 #[cfg(feature = "rkmpp")]
 pub mod ffmpeg_hw;
 pub mod ffmpeg_ram;
-#[cfg(all(
-    target_os = "linux",
-    feature = "rkmpp"
-))]
+#[cfg(all(target_os = "linux", feature = "rkmpp"))]
 pub mod rkmpp_dmabuf;
-#[cfg(all(
-    target_os = "linux",
-    feature = "rkmpp"
-))]
+#[cfg(all(target_os = "linux", feature = "rkmpp"))]
 pub mod rkmpp_native;
 
 #[no_mangle]

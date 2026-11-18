@@ -209,11 +209,7 @@ impl NativeMppEncoder {
 
     pub fn reconfigure(&mut self, kbps: u32, gop: u32) -> Result<(), String> {
         let ret = unsafe {
-            rkmpp_native_enc_reconfigure(
-                self.ctx.as_ptr(),
-                kbps as c_int,
-                gop.max(1) as c_int,
-            )
+            rkmpp_native_enc_reconfigure(self.ctx.as_ptr(), kbps as c_int, gop.max(1) as c_int)
         };
         if ret != 0 {
             return Err(last_error_message());

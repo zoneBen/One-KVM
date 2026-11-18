@@ -268,7 +268,6 @@ fn spawn_mjpeg_decode_workers(
     senders
 }
 
-
 /// Encoded video frame for distribution
 #[derive(Debug, Clone)]
 pub struct EncodedVideoFrame {
