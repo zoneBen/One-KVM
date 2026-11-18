@@ -107,6 +107,10 @@ pub struct WebRtcStreamer {
     config: RwLock<WebRtcStreamerConfig>,
     video_codec: RwLock<VideoCodecType>,
     video_pipeline: RwLock<Option<Arc<SharedVideoPipeline>>>,
+    #[cfg(target_os = "linux")]
+    phone_video: RwLock<Option<Arc<crate::phone::video_source::PhoneVideoSource>>>,
+    #[cfg(target_os = "linux")]
+    phone_audio: RwLock<Option<Arc<crate::phone::audio_source::PhoneAudioSource>>>,
     sessions: Arc<RwLock<HashMap<String, Arc<UniversalSession>>>>,
     capture_device: RwLock<Option<CaptureDeviceConfig>>,
     audio_enabled: RwLock<bool>,
@@ -128,6 +132,10 @@ impl WebRtcStreamer {
             config: RwLock::new(config.clone()),
             video_codec: RwLock::new(config.video_codec),
             video_pipeline: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            phone_video: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            phone_audio: RwLock::new(None),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             capture_device: RwLock::new(None),
             audio_enabled: RwLock::new(config.audio_enabled),
@@ -153,6 +161,10 @@ impl WebRtcStreamer {
     }
 
     pub async fn current_video_codec(&self) -> VideoCodecType {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return VideoCodecType::H264;
+        }
         *self.video_codec.read().await
     }
 
@@ -161,6 +173,10 @@ impl WebRtcStreamer {
     /// Supports H264, H265, VP8, VP9. This will restart the video pipeline
     /// and close all existing sessions.
     pub async fn set_video_codec(&self, codec: VideoCodecType) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return Ok(());
+        }
         let current = *self.video_codec.read().await;
         if current == codec {
             return Ok(());
@@ -222,6 +238,12 @@ impl WebRtcStreamer {
     }
 
     async fn stop_pipeline_if_idle(&self, reason: &str) {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            // The phone manager owns the session lifecycle (including the
+            // no-viewer grace period); do not tear down the PC pipeline here.
+            return;
+        }
         let session_count = self.sessions.read().await.len();
         let pipeline = self.video_pipeline.read().await.clone();
 
@@ -481,6 +503,12 @@ impl WebRtcStreamer {
 
     /// Ensure video pipeline is initialized and running
     async fn ensure_video_pipeline(&self) -> Result<Arc<SharedVideoPipeline>> {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return Err(AppError::VideoError(
+                "phone target is active; PC capture pipeline is disabled".to_string(),
+            ));
+        }
         let mut pipeline_guard = self.video_pipeline.write().await;
 
         if let Some(pipeline) = pipeline_guard.as_ref().cloned() {
@@ -682,6 +710,10 @@ impl WebRtcStreamer {
 
     /// Get the current pipeline configuration (if pipeline is running)
     pub async fn get_pipeline_config(&self) -> Option<SharedVideoPipelineConfig> {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return None;
+        }
         if let Some(ref pipeline) = *self.video_pipeline.read().await {
             Some(pipeline.config().await)
         } else {
@@ -690,6 +722,10 @@ impl WebRtcStreamer {
     }
 
     pub async fn current_video_geometry(&self) -> (Resolution, PixelFormat, u32) {
+        #[cfg(target_os = "linux")]
+        if let Some(phone) = self.phone_video.read().await.clone() {
+            return phone.geometry();
+        }
         if let Some(cfg) = self.get_pipeline_config().await {
             (cfg.resolution, cfg.input_format, cfg.fps)
         } else {
@@ -700,6 +736,11 @@ impl WebRtcStreamer {
 
     /// Request the encoder to generate a keyframe on next encode
     pub async fn request_keyframe(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(phone) = self.phone_video.read().await.clone() {
+            phone.request_keyframe();
+            return Ok(());
+        }
         if let Some(ref pipeline) = *self.video_pipeline.read().await {
             pipeline.request_keyframe().await;
             Ok(())
@@ -749,6 +790,10 @@ impl WebRtcStreamer {
     pub async fn subscribe_opus(
         &self,
     ) -> Option<tokio::sync::mpsc::Receiver<std::sync::Arc<OpusFrame>>> {
+        #[cfg(target_os = "linux")]
+        if let Some(audio) = self.phone_audio.read().await.clone() {
+            return Some(audio.subscribe());
+        }
         if let Some(ref controller) = *self.audio_controller.read().await {
             controller.subscribe_opus().await
         } else {
@@ -759,14 +804,18 @@ impl WebRtcStreamer {
     /// Reconnect audio source for all existing sessions
     /// Call this after audio controller restarts (e.g., quality change)
     pub async fn reconnect_audio_sources(&self) {
-        if let Some(ref controller) = *self.audio_controller.read().await {
-            let sessions = self.sessions.read().await;
-            for (session_id, session) in sessions.iter() {
-                if session.has_audio() {
-                    info!("Reconnecting audio for session {}", session_id);
-                    if let Some(rx) = controller.subscribe_opus().await {
-                        session.start_audio_from_opus(rx).await;
-                    }
+        let sessions: Vec<(String, Arc<UniversalSession>)> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect();
+        for (session_id, session) in sessions {
+            if session.has_audio() {
+                info!("Reconnecting audio for session {}", session_id);
+                if let Some(rx) = self.subscribe_opus().await {
+                    session.start_audio_from_opus(rx).await;
                 }
             }
         }
@@ -778,6 +827,11 @@ impl WebRtcStreamer {
         jpeg_quality: u8,
         device_info: Option<VideoDeviceInfo>,
     ) {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            // Keep the PC capture config untouched while the phone owns the UI.
+            return;
+        }
         let (subdev_path, bridge_kind, control_mode, recovery_hint) = match device_info {
             Some(info) => (
                 info.subdev_path.clone(),
@@ -823,6 +877,10 @@ impl WebRtcStreamer {
     /// This allows multiple consumers (WebRTC, RustDesk) to share the same pipeline
     /// without interrupting each other when they call this method with the same config.
     pub async fn update_video_config(&self, resolution: Resolution, format: PixelFormat, fps: u32) {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return;
+        }
         // Check if configuration actually changed
         let config = self.config.read().await;
         let config_changed =
@@ -917,6 +975,10 @@ impl WebRtcStreamer {
 
     /// Update encoder backend (software/hardware selection)
     pub async fn update_encoder_backend(&self, encoder_backend: Option<EncoderBackend>) {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return;
+        }
         // Close all existing sessions - they need to reconnect with new encoder
         let session_count = self.close_all_sessions().await;
         if session_count > 0 {
@@ -946,6 +1008,11 @@ impl WebRtcStreamer {
     /// - A specific hardware backend is configured, OR
     /// - Auto mode is used and hardware encoders are available
     pub async fn is_hardware_encoding(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            // The Android device's MediaCodec encoder is hardware-backed.
+            return true;
+        }
         let config = self.config.read().await;
         match config.encoder_backend {
             Some(backend) => backend.is_hardware(),
@@ -1036,10 +1103,108 @@ impl WebRtcStreamer {
         }
     }
 
+    // === Phone target ===
+
+    #[cfg(target_os = "linux")]
+    pub async fn set_phone_video_source(
+        &self,
+        source: Option<Arc<crate::phone::video_source::PhoneVideoSource>>,
+    ) {
+        *self.phone_video.write().await = source;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn set_phone_audio_source(
+        &self,
+        source: Option<Arc<crate::phone::audio_source::PhoneAudioSource>>,
+    ) {
+        *self.phone_audio.write().await = source;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn has_phone_source(&self) -> bool {
+        self.phone_video.read().await.is_some()
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn create_phone_session(
+        &self,
+        phone: Arc<crate::phone::video_source::PhoneVideoSource>,
+    ) -> Result<String> {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let (resolution, input_format, fps) = phone.geometry();
+        let phone_audio = self.phone_audio.read().await.clone();
+        let config = self.config.read().await;
+        let audio_enabled = *self.audio_enabled.read().await && phone_audio.is_some();
+        let bitrate_preset = config.bitrate_preset;
+        let webrtc = config.webrtc.clone();
+        drop(config);
+
+        let profile_level_id = phone
+            .wait_profile_level_id(Duration::from_millis(500))
+            .await;
+        let video_sdp_fmtp_line = Some(match profile_level_id {
+            Some(profile) => h264_bitstream::webrtc_fmtp_line(&profile),
+            None => h264_bitstream::fallback_webrtc_fmtp_line(),
+        });
+
+        let session_config = UniversalSessionConfig {
+            webrtc,
+            codec: VideoEncoderType::H264,
+            resolution,
+            input_format,
+            bitrate_preset,
+            fps,
+            audio_enabled,
+            video_sdp_fmtp_line,
+        };
+
+        let event_bus = self.events.read().await.clone();
+        let mut session =
+            UniversalSession::new(session_config.clone(), session_id.clone(), event_bus).await?;
+
+        if let Some(ref hid) = *self.hid_controller.read().await {
+            session.set_hid_controller(hid.clone());
+        }
+
+        let session = Arc::new(session);
+        let phone_for_keyframe = phone.clone();
+        let request_keyframe: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            phone_for_keyframe.request_keyframe();
+        });
+        session
+            .start_from_video_pipeline(phone.subscribe(), request_keyframe)
+            .await;
+
+        if session_config.audio_enabled {
+            if let Some(audio) = phone_audio {
+                session.start_audio_from_opus(audio.subscribe()).await;
+            }
+        }
+
+        self.sessions
+            .write()
+            .await
+            .insert(session_id.clone(), session);
+
+        info!(
+            "Phone WebRTC session created: {} ({}x{} @ {}fps, audio={})",
+            session_id, resolution.width, resolution.height, fps, audio_enabled
+        );
+        Ok(session_id)
+    }
+
     // === Session Management ===
 
     /// Create a new WebRTC session
     pub async fn create_session(&self) -> Result<String> {
+        #[cfg(target_os = "linux")]
+        let phone = { self.phone_video.read().await.clone() };
+        #[cfg(target_os = "linux")]
+        if let Some(phone) = phone {
+            return self.create_phone_session(phone).await;
+        }
+
         let session_id = uuid::Uuid::new_v4().to_string();
         let codec = *self.video_codec.read().await;
 
@@ -1251,6 +1416,18 @@ impl WebRtcStreamer {
         let codec = *self.video_codec.read().await;
         let session_count = self.session_count().await;
 
+        #[cfg(target_os = "linux")]
+        if let Some(phone) = self.phone_video.read().await.clone() {
+            return WebRtcStreamerStats {
+                session_count,
+                video_codec: format!("{:?}", VideoCodecType::H264),
+                video_pipeline: Some(VideoPipelineStats {
+                    current_fps: phone.fps() as f32,
+                }),
+                audio_enabled: *self.audio_enabled.read().await,
+            };
+        }
+
         let video_pipeline = if let Some(ref pipeline) = *self.video_pipeline.read().await {
             let s = pipeline.stats().await;
             Some(VideoPipelineStats {
@@ -1270,6 +1447,10 @@ impl WebRtcStreamer {
 
     /// Get pipeline statistics
     pub async fn pipeline_stats(&self) -> Option<SharedVideoPipelineStats> {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return None;
+        }
         if let Some(ref pipeline) = *self.video_pipeline.read().await {
             Some(pipeline.stats().await)
         } else {
@@ -1282,6 +1463,10 @@ impl WebRtcStreamer {
     /// Note: Hardware encoders (VAAPI, NVENC, etc.) don't support dynamic bitrate changes.
     /// This method restarts the pipeline to apply the new bitrate only if the preset actually changed.
     pub async fn set_bitrate_preset(&self, preset: BitratePreset) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return Ok(());
+        }
         // Check if preset actually changed
         let current_preset = self.config.read().await.bitrate_preset;
         if current_preset == preset {
@@ -1336,6 +1521,10 @@ impl WebRtcStreamer {
     /// changes while a pipeline is running, the pipeline is restarted and the
     /// sessions are reattached so the encoder immediately emits the new size.
     pub async fn set_output_max_height(&self, max_height: u32) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.phone_video.read().await.is_some() {
+            return Ok(());
+        }
         let resolution_changed = {
             let mut config = self.config.write().await;
             if config.output_max_height == max_height {

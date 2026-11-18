@@ -130,6 +130,10 @@ enum QueuedHidEvent {
 pub struct HidController {
     backend_factory: HidBackendFactory,
     backend: Arc<RwLock<Option<Arc<dyn HidBackend>>>>,
+    /// Runtime-only sink used by the phone/scrcpy target. It takes precedence
+    /// over the configured OTG/CH9329/Bluetooth backend and never touches the
+    /// persisted HID configuration.
+    override_backend: Arc<RwLock<Option<Arc<dyn HidBackend>>>>,
     backend_type: Arc<RwLock<HidBackendType>>,
     events: Arc<tokio::sync::RwLock<Option<Arc<EventBus>>>>,
     runtime_state: Arc<RwLock<HidRuntimeState>>,
@@ -152,6 +156,7 @@ impl HidController {
         let (hid_tx, hid_rx) = mpsc::channel(HID_EVENT_QUEUE_CAPACITY);
         Self {
             backend: Arc::new(RwLock::new(None)),
+            override_backend: Arc::new(RwLock::new(None)),
             backend_factory: HidBackendFactory::new(otg_service),
             backend_type: Arc::new(RwLock::new(backend_type.clone())),
             events: Arc::new(tokio::sync::RwLock::new(None)),
@@ -177,6 +182,7 @@ impl HidController {
         let (hid_tx, hid_rx) = mpsc::channel(HID_EVENT_QUEUE_CAPACITY);
         Self {
             backend: Arc::new(RwLock::new(None)),
+            override_backend: Arc::new(RwLock::new(None)),
             backend_factory: HidBackendFactory::new(),
             backend_type: Arc::new(RwLock::new(backend_type.clone())),
             events: Arc::new(tokio::sync::RwLock::new(None)),
@@ -204,6 +210,30 @@ impl HidController {
 
     pub async fn set_event_bus(&self, events: Arc<EventBus>) {
         *self.events.write().await = Some(events);
+    }
+
+    /// Route input to a runtime backend (the phone/scrcpy session) without
+    /// changing the persisted HID backend.
+    pub async fn set_override_backend(&self, backend: Option<Arc<dyn HidBackend>>) {
+        let has_override = backend.is_some();
+        *self.override_backend.write().await = backend;
+        if has_override {
+            // The PC-side jiggler must not inject into the phone target.
+            self.jiggler.lock().suspend();
+            self.jiggler_changed.notify_one();
+            // The configured HID backend may be None (init() returns before
+            // starting the worker); phone input still needs the event pump.
+            self.start_event_worker().await;
+        }
+    }
+
+    pub async fn has_override_backend(&self) -> bool {
+        self.override_backend.read().await.is_some()
+    }
+
+    async fn input_available(&self) -> bool {
+        self.backend_available.load(Ordering::Acquire)
+            || self.override_backend.read().await.is_some()
     }
 
     pub async fn init(&self) -> Result<()> {
@@ -294,7 +324,7 @@ impl HidController {
     }
 
     pub async fn send_keyboard(&self, event: KeyboardEvent) -> Result<()> {
-        if !self.backend_available.load(Ordering::Acquire) {
+        if !self.input_available().await {
             return Err(AppError::BadRequest(
                 "HID backend not available".to_string(),
             ));
@@ -303,7 +333,7 @@ impl HidController {
     }
 
     pub async fn send_mouse(&self, event: MouseEvent) -> Result<()> {
-        if !self.backend_available.load(Ordering::Acquire) {
+        if !self.input_available().await {
             return Err(AppError::BadRequest(
                 "HID backend not available".to_string(),
             ));
@@ -320,7 +350,7 @@ impl HidController {
     }
 
     pub async fn send_consumer(&self, event: ConsumerEvent) -> Result<()> {
-        if !self.backend_available.load(Ordering::Acquire) {
+        if !self.input_available().await {
             return Err(AppError::BadRequest(
                 "HID backend not available".to_string(),
             ));
@@ -342,7 +372,7 @@ impl HidController {
     }
 
     async fn send_confirmed(&self, event: QueuedHidEvent) -> Result<()> {
-        if !self.backend_available.load(Ordering::Acquire) {
+        if !self.input_available().await {
             return Err(AppError::ServiceUnavailable(
                 "HID backend not available".into(),
             ));
@@ -385,7 +415,7 @@ impl HidController {
     }
 
     pub async fn is_available(&self) -> bool {
-        self.backend_available.load(Ordering::Acquire)
+        self.input_available().await
     }
 
     pub async fn backend_type(&self) -> HidBackendType {
@@ -561,6 +591,7 @@ impl HidController {
         };
 
         let backend = self.backend.clone();
+        let override_backend = self.override_backend.clone();
         let pending_move = self.pending_move.clone();
         let pending_move_flag = self.pending_move_flag.clone();
         let reset_requested = self.reset_requested.clone();
@@ -583,9 +614,17 @@ impl HidController {
                     _ = tokio::time::sleep_until(next_poll), if delay.is_some() => {
                         // Synthetic motion is sent by this same worker, outside the
                         // coalescing queue, so opposite movements cannot cancel out.
-                        let active_backend = backend.read().await.clone();
+                        // While the phone override is active the PC jiggler must stay
+                        // disabled, even if the configured PC backend is still online.
+                        let override_active = override_backend.read().await.is_some();
+                        let active_backend = if override_active {
+                            None
+                        } else {
+                            backend.read().await.clone()
+                        };
                         let snapshot = active_backend.as_ref().map(|backend| backend.runtime_snapshot());
-                        let ready = backend_available.load(Ordering::Acquire)
+                        let ready = !override_active
+                            && backend_available.load(Ordering::Acquire)
                             && snapshot.as_ref().is_some_and(|state| state.initialized && state.online);
                         let resolution = snapshot.and_then(|state| state.screen_resolution).unwrap_or((1920, 1080));
                         let movement = jiggler.lock().tick(ready, resolution, std::time::Instant::now());
@@ -619,16 +658,22 @@ impl HidController {
                     while rx.try_recv().is_ok() {}
                     *pending_move.lock() = None;
                     pending_move_flag.store(false, Ordering::Release);
-                    process_hid_event(QueuedHidEvent::Reset, &backend, &jiggler).await;
+                    process_hid_event(QueuedHidEvent::Reset, &backend, &override_backend, &jiggler)
+                        .await;
                     continue;
                 }
-                process_hid_event(event, &backend, &jiggler).await;
+                process_hid_event(event, &backend, &override_backend, &jiggler).await;
 
                 if pending_move_flag.swap(false, Ordering::AcqRel) {
                     let move_event = { pending_move.lock().take() };
                     if let Some(move_event) = move_event {
-                        process_hid_event(QueuedHidEvent::Mouse(move_event), &backend, &jiggler)
-                            .await;
+                        process_hid_event(
+                            QueuedHidEvent::Mouse(move_event),
+                            &backend,
+                            &override_backend,
+                            &jiggler,
+                        )
+                        .await;
                     }
                 }
             }
@@ -828,6 +873,7 @@ async fn apply_backend_runtime_state(
 async fn process_hid_event(
     event: QueuedHidEvent,
     backend: &Arc<RwLock<Option<Arc<dyn HidBackend>>>>,
+    override_backend: &Arc<RwLock<Option<Arc<dyn HidBackend>>>>,
     jiggler: &Arc<parking_lot::Mutex<jiggler::JigglerState>>,
 ) {
     let (event, reply) = match event {
@@ -845,7 +891,10 @@ async fn process_hid_event(
             QueuedHidEvent::Confirmed(..) => unreachable!("nested confirmed HID event"),
         }
     }
-    let backend = backend.read().await.clone();
+    let backend = match override_backend.read().await.clone() {
+        Some(backend) => Some(backend),
+        None => backend.read().await.clone(),
+    };
     let result = match backend {
         Some(backend) => tokio::task::spawn_blocking(move || {
             futures::executor::block_on(async move {

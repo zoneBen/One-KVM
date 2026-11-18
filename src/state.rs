@@ -74,6 +74,8 @@ pub struct AppState {
     pub stream_manager: Arc<VideoStreamManager>,
     pub webrtc: Arc<WebRtcStreamer>,
     pub hid: Arc<HidController>,
+    #[cfg(target_os = "linux")]
+    pub phone: Arc<crate::phone::PhoneManager>,
     pub mcp: Arc<McpService>,
     #[cfg(unix)]
     pub msd: Arc<RwLock<Option<MsdController>>>,
@@ -106,6 +108,7 @@ impl AppState {
         stream_manager: Arc<VideoStreamManager>,
         webrtc: Arc<WebRtcStreamer>,
         hid: Arc<HidController>,
+        #[cfg(target_os = "linux")] phone: Arc<crate::phone::PhoneManager>,
         #[cfg(unix)] msd: Option<MsdController>,
         atx: Option<AtxController>,
         audio: Arc<AudioController>,
@@ -167,6 +170,8 @@ impl AppState {
             stream_manager,
             webrtc,
             hid,
+            #[cfg(target_os = "linux")]
+            phone,
             mcp,
             #[cfg(unix)]
             msd,

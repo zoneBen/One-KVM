@@ -142,6 +142,15 @@ impl RuntimeBuilder {
             .await;
         connect_audio_recovery(&audio, &stream_manager).await;
 
+        #[cfg(target_os = "linux")]
+        let phone = crate::phone::PhoneManager::new(
+            webrtc.clone(),
+            hid.clone(),
+            crate::phone::manager::PhoneConfig::default(),
+        );
+        #[cfg(target_os = "linux")]
+        stream_manager.set_phone_manager(phone.clone()).await;
+
         let initial_mode = config.stream.mode.clone();
         if let Err(error) = stream_manager.init_with_mode(initial_mode.clone()).await {
             tracing::warn!(
@@ -167,6 +176,8 @@ impl RuntimeBuilder {
             stream_manager,
             webrtc,
             hid,
+            #[cfg(target_os = "linux")]
+            phone,
             #[cfg(unix)]
             msd,
             atx,

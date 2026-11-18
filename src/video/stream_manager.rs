@@ -32,6 +32,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::config::{ConfigStore, StreamMode};
+#[cfg(target_os = "linux")]
+use crate::error::AppError;
 use crate::error::Result;
 use crate::events::{EventBus, SystemEvent, VideoDeviceInfo};
 use crate::hid::HidController;
@@ -111,6 +113,12 @@ pub struct VideoStreamManager {
     /// Temporary override set from the console; never persisted and cleared
     /// when the process restarts.
     output_max_height_override: RwLock<Option<u32>>,
+    #[cfg(target_os = "linux")]
+    phone_manager: RwLock<Option<Arc<crate::phone::PhoneManager>>>,
+    #[cfg(target_os = "linux")]
+    target: RwLock<crate::phone::TargetMode>,
+    #[cfg(target_os = "linux")]
+    target_switch: tokio::sync::Mutex<()>,
 }
 
 impl VideoStreamManager {
@@ -130,6 +138,12 @@ impl VideoStreamManager {
             transition_id: RwLock::new(None),
             output_max_height_default: RwLock::new(0),
             output_max_height_override: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            phone_manager: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            target: RwLock::new(crate::phone::TargetMode::Pc),
+            #[cfg(target_os = "linux")]
+            target_switch: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -195,10 +209,7 @@ impl VideoStreamManager {
     }
 
     /// Set (or clear with `None`) the temporary console override.
-    pub async fn set_output_max_height_override(
-        &self,
-        max_height: Option<u32>,
-    ) -> Result<()> {
+    pub async fn set_output_max_height_override(&self, max_height: Option<u32>) -> Result<()> {
         *self.output_max_height_override.write().await = max_height;
         self.apply_output_max_height().await
     }
@@ -208,9 +219,7 @@ impl VideoStreamManager {
         self.streamer
             .mjpeg_handler()
             .set_output_max_height(max_height);
-        self.webrtc_streamer
-            .set_output_max_height(max_height)
-            .await
+        self.webrtc_streamer.set_output_max_height(max_height).await
     }
 
     /// Get current stream codec constraints derived from running services.
@@ -281,6 +290,18 @@ impl VideoStreamManager {
         self: &Arc<Self>,
         new_mode: StreamMode,
     ) -> Result<ModeSwitchTransaction> {
+        #[cfg(target_os = "linux")]
+        let target = *self.target.read().await;
+        #[cfg(target_os = "linux")]
+        if target == crate::phone::TargetMode::Phone {
+            // The phone target is WebRTC-only; mode switching is owned by the
+            // target switch endpoint.
+            return Ok(ModeSwitchTransaction {
+                accepted: false,
+                switching: false,
+                transition_id: None,
+            });
+        }
         let current_mode = self.mode.read().await.clone();
 
         if current_mode == new_mode {
@@ -387,6 +408,12 @@ impl VideoStreamManager {
     }
 
     async fn sync_webrtc_capture_source(&self, reason: &str) {
+        #[cfg(target_os = "linux")]
+        let target = *self.target.read().await;
+        #[cfg(target_os = "linux")]
+        if target == crate::phone::TargetMode::Phone {
+            return;
+        }
         let (device_path, resolution, format, fps, jpeg_quality) =
             self.streamer.current_capture_config().await;
         info!(
@@ -591,6 +618,12 @@ impl VideoStreamManager {
 
     /// Start streaming (based on current mode)
     pub async fn start(self: &Arc<Self>) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let target = *self.target.read().await;
+        #[cfg(target_os = "linux")]
+        if target == crate::phone::TargetMode::Phone {
+            return Ok(());
+        }
         let mode = self.mode.read().await.clone();
 
         match mode {
@@ -612,6 +645,22 @@ impl VideoStreamManager {
 
     /// Stop streaming
     pub async fn stop(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let target = *self.target.read().await;
+        #[cfg(target_os = "linux")]
+        if target == crate::phone::TargetMode::Phone {
+            let phone = { self.phone_manager.read().await.clone() };
+            if let Some(phone) = phone {
+                let _ = phone.deactivate().await;
+            }
+            let close_result = self
+                .webrtc_streamer
+                .close_all_sessions_and_release_device()
+                .await;
+            *self.target.write().await = crate::phone::TargetMode::Pc;
+            close_result?;
+            return Ok(());
+        }
         let mode = self.mode.read().await.clone();
 
         match mode {
@@ -629,6 +678,27 @@ impl VideoStreamManager {
 
     /// Get video device info for device_info event
     pub async fn get_video_info(&self) -> VideoDeviceInfo {
+        #[cfg(target_os = "linux")]
+        let target = *self.target.read().await;
+        #[cfg(target_os = "linux")]
+        if target == crate::phone::TargetMode::Phone {
+            let phone_manager = { self.phone_manager.read().await.clone() };
+            let status = match phone_manager {
+                Some(phone) => phone.cached_status().await,
+                None => crate::phone::PhoneStatus::unavailable("未配置手机控制"),
+            };
+            return VideoDeviceInfo {
+                available: status.available,
+                device: status.serial,
+                format: Some("H264".to_string()),
+                resolution: status.resolution,
+                fps: status.fps,
+                online: status.state == crate::phone::PhoneState::Running,
+                stream_mode: "h264".to_string(),
+                config_changing: false,
+                error: status.error,
+            };
+        }
         let stats = self.stats().await;
         let state = self.streamer.state().await;
         let device = self.streamer.current_device().await;
@@ -666,6 +736,123 @@ impl VideoStreamManager {
     /// Set HID controller for WebRTC DataChannel
     pub async fn set_hid_controller(&self, hid: Arc<HidController>) {
         self.webrtc_streamer.set_hid_controller(hid).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn set_phone_manager(&self, phone: Arc<crate::phone::PhoneManager>) {
+        *self.phone_manager.write().await = Some(phone);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn target_mode(&self) -> crate::phone::TargetMode {
+        *self.target.read().await
+    }
+
+    /// Global PC <-> phone switch. The phone source is only installed while
+    /// the phone target is active; the PC OTG gadget stays bound.
+    #[cfg(target_os = "linux")]
+    pub async fn set_target(
+        &self,
+        target: crate::phone::TargetMode,
+    ) -> Result<crate::phone::TargetStatus> {
+        use crate::phone::{PhoneStatus, TargetMode, TargetStatus};
+
+        let _guard = self.target_switch.lock().await;
+        let current = *self.target.read().await;
+        let phone_manager = self.phone_manager.read().await.clone();
+
+        if target == TargetMode::Phone && phone_manager.is_none() {
+            return Err(AppError::ServiceUnavailable(
+                "手机控制尚未初始化".to_string(),
+            ));
+        }
+
+        if current != target {
+            match target {
+                TargetMode::Phone => {
+                    let phone = phone_manager.as_ref().ok_or_else(|| {
+                        AppError::ServiceUnavailable("手机控制尚未初始化".to_string())
+                    })?;
+                    if let Err(error) = phone.activate().await {
+                        // The switch failed before the target changed; release
+                        // the disabled phone HID sink back to the PC backend.
+                        phone.release_input().await;
+                        return Err(error);
+                    }
+                    if let Err(error) = self.ensure_webrtc_mode().await {
+                        let _ = phone.deactivate().await;
+                        return Err(error);
+                    }
+                    if let Err(error) = self
+                        .webrtc_streamer
+                        .close_all_sessions_and_release_device()
+                        .await
+                    {
+                        let _ = phone.deactivate().await;
+                        return Err(error);
+                    }
+                    *self.target.write().await = TargetMode::Phone;
+                    info!("Target switched to phone");
+                }
+                TargetMode::Pc => {
+                    // Publish the target first so concurrent session creation
+                    // does not restart the phone during teardown.
+                    *self.target.write().await = TargetMode::Pc;
+                    if let Some(phone) = phone_manager.as_ref() {
+                        phone.deactivate().await?;
+                    }
+                    // Drop any phone/PC sessions that survived the switch; they
+                    // reconnect to the new target from the console.
+                    self.webrtc_streamer
+                        .close_all_sessions_and_release_device()
+                        .await?;
+                    self.sync_webrtc_capture_source("target switch to pc").await;
+                    info!("Target switched to PC");
+                }
+            }
+        } else if target == TargetMode::Phone {
+            if let Some(phone) = phone_manager.as_ref() {
+                phone.ensure_active().await?;
+            }
+        }
+
+        let phone = match phone_manager.as_ref() {
+            Some(phone) => phone.cached_status().await,
+            None => PhoneStatus::unavailable("未配置手机控制"),
+        };
+        Ok(TargetStatus { target, phone })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn ensure_session_source(&self) -> Result<()> {
+        let target = *self.target.read().await;
+        if target != crate::phone::TargetMode::Phone {
+            return Ok(());
+        }
+        let phone = { self.phone_manager.read().await.clone() }
+            .ok_or_else(|| AppError::ServiceUnavailable("手机控制尚未初始化".to_string()))?;
+        phone.ensure_active().await?;
+        self.ensure_webrtc_mode().await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn ensure_webrtc_mode(&self) -> Result<()> {
+        if self.current_mode().await == StreamMode::WebRTC {
+            return Ok(());
+        }
+        if self.current_mode().await == StreamMode::Mjpeg {
+            if let Err(error) = self.streamer.stop().await {
+                warn!("Failed to stop MJPEG streamer for phone mode: {}", error);
+            }
+        }
+        *self.mode.write().await = StreamMode::WebRTC;
+        self.publish_event(SystemEvent::StreamModeChanged {
+            transition_id: None,
+            mode: "h264".to_string(),
+            previous_mode: "mjpeg".to_string(),
+        })
+        .await;
+        Ok(())
     }
 
     /// Set audio enabled state for WebRTC

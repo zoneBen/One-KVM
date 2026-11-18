@@ -14,6 +14,8 @@ mod logs;
 mod mcp;
 #[cfg(unix)]
 mod msd_api;
+#[cfg(target_os = "linux")]
+mod phone;
 mod setup;
 mod stream;
 mod system;
@@ -31,6 +33,8 @@ pub use logs::*;
 pub use mcp::*;
 #[cfg(unix)]
 pub use msd_api::*;
+#[cfg(target_os = "linux")]
+pub use phone::*;
 pub use setup::*;
 pub use stream::*;
 pub use system::*;

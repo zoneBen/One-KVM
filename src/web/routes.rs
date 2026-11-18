@@ -372,6 +372,15 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             )
     };
 
+    #[cfg(target_os = "linux")]
+    let user_routes = user_routes
+        .route(
+            "/target",
+            get(handlers::target_status).post(handlers::set_target),
+        )
+        .route("/phone/action", post(handlers::phone_action))
+        .route("/phone/video-size", post(handlers::phone_video_size));
+
     // Protected routes (all authenticated users)
     let protected_routes = user_routes;
 

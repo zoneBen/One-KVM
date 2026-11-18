@@ -31,6 +31,8 @@ pub mod mcp;
 pub mod msd;
 #[cfg(all(unix, feature = "desktop"))]
 pub mod otg;
+#[cfg(all(target_os = "linux", feature = "desktop"))]
+pub mod phone;
 #[cfg(feature = "desktop")]
 pub mod platform;
 #[cfg(feature = "desktop")]

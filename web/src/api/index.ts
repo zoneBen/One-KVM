@@ -1016,4 +1016,72 @@ export const usbApi = {
     }),
 }
 
+export type TargetMode = 'pc' | 'phone'
+
+export type PhoneState =
+  | 'unavailable'
+  | 'disconnected'
+  | 'unauthorized'
+  | 'ready'
+  | 'starting'
+  | 'running'
+  | 'suspended'
+  | 'error'
+
+export interface PhoneStatus {
+  available: boolean
+  state: PhoneState
+  serial?: string
+  model?: string
+  android?: string
+  resolution?: [number, number]
+  fps: number
+  audio: boolean
+  error?: string
+}
+
+export interface TargetStatus {
+  target: TargetMode
+  phone: PhoneStatus
+}
+
+export type PhoneAction =
+  | 'back'
+  | 'home'
+  | 'recents'
+  | 'power'
+  | 'volume_up'
+  | 'volume_down'
+  | 'wake'
+  | 'rotate'
+  | 'screen_on'
+  | 'screen_off'
+
+export const targetApi = {
+  status: () =>
+    request<TargetStatus>('/target', {}, { toastOnError: false }),
+
+  set: (target: TargetMode) =>
+    request<TargetStatus>('/target', {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    }),
+
+  action: (action: PhoneAction) =>
+    request<{ success: boolean }>('/phone/action', {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+
+  videoSize: (width: number, height: number) =>
+    request<{ success: boolean }>(
+      '/phone/video-size',
+      {
+        method: 'POST',
+        body: JSON.stringify({ width, height }),
+      },
+      { toastOnError: false },
+    ),
+}
+
 export { ApiError }

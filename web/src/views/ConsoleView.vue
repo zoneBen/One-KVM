@@ -16,7 +16,8 @@ import { useTheme } from '@/composables/useTheme'
 import { useConsoleLayout } from '@/composables/useConsoleLayout'
 import { getUnifiedAudio } from '@/composables/useUnifiedAudio'
 import { getMicrophone } from '@/composables/useMicrophone'
-import { streamApi, hidApi, atxApi, atxConfigApi, authApi, uacApi } from '@/api'
+import { streamApi, hidApi, atxApi, atxConfigApi, authApi, uacApi, targetApi } from '@/api'
+import type { PhoneAction, PhoneStatus, TargetMode } from '@/api'
 import { CanonicalKey, HidBackend } from '@/types/generated'
 import type { HidKeyboardEvent, HidMouseEvent } from '@/types/hid'
 import { keyboardEventToCanonicalKey, updateModifierMaskForKey } from '@/lib/keyboardMappings'
@@ -70,6 +71,16 @@ import {
   KeyRound,
   Loader2,
   Settings,
+  ArrowLeft,
+  Home,
+  Square,
+  Power,
+  Volume1,
+  Volume2,
+  RotateCw,
+  Smartphone,
+  Monitor,
+  Keyboard,
 } from 'lucide-vue-next'
 
 const { t, te } = useI18n()
@@ -104,6 +115,22 @@ const consoleEvents = useConsoleEvents({
 })
 
 const videoMode = ref<VideoMode>('mjpeg')
+
+// Global PC/phone target. Only one target is active at a time; the backend
+// closes existing WebRTC sessions on a switch and the console reconnects.
+const target = ref<TargetMode>('pc')
+const phoneStatus = ref<PhoneStatus | null>(null)
+const targetSwitching = ref(false)
+let targetPollTimer: number | null = null
+let lastPhoneVideoSize = ''
+const targetSwitchVisible = computed(() => phoneStatus.value !== null)
+const phoneStateLabel = computed(() => {
+  const state = phoneStatus.value?.state
+  if (!state) return ''
+  const key = `console.phone.state.${state}`
+  return te(key) ? t(key) : state
+})
+
 const VIDEO_ROTATIONS: VideoRotation[] = [0, 90, 180, 270]
 const storedVideoRotation = Number(localStorage.getItem('videoRotation'))
 const videoRotation = ref<VideoRotation>(
@@ -217,6 +244,13 @@ let interactionListenersBound = false
 const isConsoleActive = ref(false)
 
 function syncMouseModeFromConfig() {
+  if (target.value === 'phone') {
+    if (mouseMode.value !== 'absolute') {
+      resetTouchInput()
+      mouseMode.value = 'absolute'
+    }
+    return
+  }
   const mouseAbsolute = configStore.hid?.mouse_absolute
   if (typeof mouseAbsolute !== 'boolean') return
   const nextMode: 'absolute' | 'relative' = mouseAbsolute && configStore.hid?.backend !== 'bluetooth' ? 'absolute' : 'relative'
@@ -833,6 +867,7 @@ function waitForVideoFirstFrame(el: HTMLVideoElement, timeoutMs = 2000): Promise
 function shouldSuppressAutoReconnect(): boolean {
   return videoMode.value === 'mjpeg'
     || !isConsoleActive.value
+    || targetSwitching.value
     || videoSession.localSwitching.value
     || videoSession.backendSwitching.value
     || videoRestarting.value
@@ -1528,6 +1563,10 @@ function handleStreamModeChanged(data: { mode: string; previous_mode: string }) 
   const newMode = normalizeServerMode(data.mode)
   if (!newMode) return
 
+  // The target switch controls the reconnect itself; avoid a duplicate
+  // WebRTC connection racing the switch endpoint.
+  if (targetSwitching.value) return
+
   if (isModeSwitching.value) {
     console.log('[StreamModeChanged] Mode switch in progress, ignoring event')
     return
@@ -1583,6 +1622,115 @@ const mjpegUrl = computed(() => {
   }
   return `${streamApi.getMjpegUrl(myClientId)}&t=${mjpegTimestamp.value}`
 })
+
+async function refreshTargetStatus() {
+  try {
+    const status = await targetApi.status()
+    if (!targetSwitching.value) {
+      target.value = status.target
+      phoneStatus.value = status.phone
+    }
+  } catch {
+    // Phone endpoints are Linux-only; hide the switch when unavailable.
+    phoneStatus.value = null
+  }
+}
+
+function startTargetPolling() {
+  if (targetPollTimer !== null) return
+  targetPollTimer = window.setInterval(() => {
+    void refreshTargetStatus()
+  }, 3000)
+}
+
+function stopTargetPolling() {
+  if (targetPollTimer === null) return
+  clearInterval(targetPollTimer)
+  targetPollTimer = null
+}
+
+async function switchTarget(next: TargetMode) {
+  // Clicking the already-selected Phone target is also the manual reconnect
+  // path: the session may have been suspended after the grace period, or the
+  // WebRTC peer may still be down while the backend session is running.
+  const retryPhone = next === 'phone'
+    && target.value === 'phone'
+    && (phoneStatus.value?.state !== 'running' || webrtc.state.value !== 'connected')
+  if (targetSwitching.value || (next === target.value && !retryPhone)) return
+  targetSwitching.value = true
+  const previous = target.value
+  try {
+    // Release the current WebRTC peer/session first so the backend can stop
+    // the old pipeline without racing a reconnect.
+    await webrtc.disconnect()
+    const status = await targetApi.set(next)
+    target.value = status.target
+    phoneStatus.value = status.phone
+    if (next === 'phone') {
+      mouseMode.value = 'absolute'
+      videoMode.value = 'h264'
+      localStorage.setItem('videoMode', 'h264')
+      lastPhoneVideoSize = ''
+      // The PC capture pipeline may have left a stale no-signal/lost state.
+      streamSignalState.value = 'ok'
+      streamSignalReason.value = null
+      streamNextRetryMs.value = null
+      videoError.value = false
+      videoErrorMessage.value = ''
+      await connectWebRTCOnly('h264')
+    } else {
+      // The PC encoder may be configured for a different codec than the
+      // phone (always H.264); resync from the backend before reconnecting.
+      const modeResp = await streamApi.getMode().catch(() => null)
+      const codec: VideoMode = normalizeServerMode(modeResp?.mode) ?? 'h264'
+      videoMode.value = codec
+      localStorage.setItem('videoMode', codec)
+      await connectWebRTCOnly(codec)
+    }
+  } catch (error) {
+    toast.error(t('console.phone.switchFailed'))
+    await refreshTargetStatus()
+    if (previous === 'pc' && isConsoleActive.value) {
+      if (videoMode.value === 'mjpeg') {
+        refreshVideo()
+      } else {
+        await connectWebRTCOnly(videoMode.value).catch(() => {})
+      }
+    }
+  } finally {
+    targetSwitching.value = false
+  }
+}
+
+async function sendPhoneAction(action: PhoneAction) {
+  if (target.value !== 'phone') return
+  try {
+    await targetApi.action(action)
+  } catch {
+    toast.error(t('console.phone.actionFailed'))
+  }
+}
+
+watch(target, next => {
+  if (next === 'phone') {
+    mouseMode.value = 'absolute'
+  } else {
+    // Restore the configured PC mouse mode after a target switch (another
+    // console may have switched this browser's target back to PC).
+    syncMouseModeFromConfig()
+  }
+})
+
+watch(
+  () => [webrtc.stats.value.frameWidth, webrtc.stats.value.frameHeight] as const,
+  ([width, height]) => {
+    if (target.value !== 'phone' || !width || !height) return
+    const key = `${width}x${height}`
+    if (key === lastPhoneVideoSize) return
+    lastPhoneVideoSize = key
+    void targetApi.videoSize(width, height).catch(() => {})
+  },
+)
 
 async function connectWebRTCOnly(codec: VideoMode = 'h264') {
   // Background events (device info, config apply, recovery) must not revive
@@ -3134,6 +3282,8 @@ watch(microphoneTransferEnabled, enabled => {
 
 onMounted(async () => {
   await refreshUacAvailability()
+  await refreshTargetStatus()
+  startTargetPolling()
 
   consoleEvents.subscribe()
 
@@ -3179,14 +3329,18 @@ onMounted(async () => {
 
 onActivated(() => {
   void refreshUacAvailability()
+  void refreshTargetStatus()
+  startTargetPolling()
   void activateConsoleView()
 })
 
 onDeactivated(() => {
+  stopTargetPolling()
   deactivateConsoleView()
 })
 
 onUnmounted(() => {
+  stopTargetPolling()
   deactivateConsoleView()
 
   initialDeviceInfoReceived = false
@@ -3368,6 +3522,7 @@ onUnmounted(() => {
       :class="`console-actionbar-host--${consoleLayout}`"
     >
       <ActionBar
+        v-if="target === 'pc'"
         :layout="consoleLayout"
         :mouse-mode="mouseMode"
         :video-mode="videoMode"
@@ -3404,6 +3559,41 @@ onUnmounted(() => {
         @open-terminal="openTerminal"
 
       />
+      <div
+        v-else
+        class="console-action-bar phone-action-bar flex flex-wrap items-center justify-center gap-1.5 p-2"
+      >
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('back')">
+          <ArrowLeft class="size-4" />{{ t('console.phone.back') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('home')">
+          <Home class="size-4" />{{ t('console.phone.home') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('recents')">
+          <Square class="size-4" />{{ t('console.phone.recents') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('volume_down')">
+          <Volume1 class="size-4" />{{ t('console.phone.volumeDown') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('volume_up')">
+          <Volume2 class="size-4" />{{ t('console.phone.volumeUp') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('power')">
+          <Power class="size-4" />{{ t('console.phone.power') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="sendPhoneAction('rotate')">
+          <RotateCw class="size-4" />{{ t('console.phone.rotate') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="handleToggleVirtualKeyboard">
+          <Keyboard class="size-4" />{{ t('console.phone.keyboard') }}
+        </Button>
+        <Button variant="outline" size="sm" class="gap-1.5" @click="toggleFullscreen">
+          <Monitor class="size-4" />{{ t('console.phone.fullscreen') }}
+        </Button>
+        <span v-if="targetSwitching" class="px-2 text-xs text-muted-foreground">
+          {{ t('console.phone.switching') }}
+        </span>
+      </div>
     </div>
     <div
       class="flex-1 overflow-hidden relative transition-[padding] duration-300"
@@ -3418,6 +3608,53 @@ onUnmounted(() => {
           ref="videoWorkspaceRef"
           class="video-workspace relative h-full w-full min-h-[120px] overflow-auto fullscreen:bg-black"
         >
+          <div
+            v-if="targetSwitchVisible"
+            class="absolute left-3 top-3 z-40 flex items-center gap-1 rounded-lg border border-border/70 bg-background/90 p-1 shadow-sm backdrop-blur"
+          >
+            <Button
+              size="sm"
+              class="gap-1.5"
+              :variant="target === 'pc' ? 'default' : 'ghost'"
+              :disabled="targetSwitching"
+              @click="switchTarget('pc')"
+            >
+              <Monitor class="size-4" />
+              {{ t('console.phone.pc') }}
+            </Button>
+            <Button
+              size="sm"
+              class="gap-1.5"
+              :variant="target === 'phone' ? 'default' : 'ghost'"
+              :disabled="targetSwitching || !phoneStatus?.available"
+              :title="phoneStatus?.error || ''"
+              @click="switchTarget('phone')"
+            >
+              <Smartphone class="size-4" />
+              {{ t('console.phone.phone') }}
+            </Button>
+            <span v-if="targetSwitching" class="px-2 text-xs text-muted-foreground">
+              {{ t('console.phone.switching') }}
+            </span>
+          </div>
+
+          <div
+            v-if="target === 'phone' && phoneStatus"
+            class="absolute bottom-3 left-3 z-40 max-w-[calc(100%-1.5rem)] rounded-lg border border-border/70 bg-background/90 px-3 py-1.5 text-xs shadow-sm backdrop-blur"
+            :title="phoneStatus.error || ''"
+          >
+            <span class="font-medium">{{ phoneStatus.model || t('console.phone.phone') }}</span>
+            <span v-if="phoneStatus.resolution" class="text-muted-foreground">
+              · {{ phoneStatus.resolution[0] }}×{{ phoneStatus.resolution[1] }}
+            </span>
+            <span
+              class="ml-2"
+              :class="phoneStatus.state === 'running' ? 'text-emerald-600' : 'text-amber-600'"
+            >
+              {{ phoneStateLabel }}
+            </span>
+          </div>
+
           <div
             class="relative grid place-items-center"
             :class="videoStageClass"

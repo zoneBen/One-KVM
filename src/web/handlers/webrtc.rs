@@ -11,6 +11,11 @@ pub struct CreateSessionResponse {
 pub async fn webrtc_create_session(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<CreateSessionResponse>> {
+    // In phone mode this activates the phone session and switches the stream
+    // manager to WebRTC before the mode check below.
+    #[cfg(target_os = "linux")]
+    state.stream_manager.ensure_session_source().await?;
+
     // Check if WebRTC mode is active
     if !state.stream_manager.is_webrtc_enabled().await {
         return Err(AppError::ServiceUnavailable(
@@ -27,6 +32,11 @@ pub async fn webrtc_offer(
     State(state): State<Arc<AppState>>,
     Json(req): Json<OfferRequest>,
 ) -> Result<Json<AnswerResponse>> {
+    // In phone mode this activates the phone session and switches the stream
+    // manager to WebRTC before the mode check below.
+    #[cfg(target_os = "linux")]
+    state.stream_manager.ensure_session_source().await?;
+
     // Check if WebRTC mode is active
     if !state.stream_manager.is_webrtc_enabled().await {
         return Err(AppError::ServiceUnavailable(
