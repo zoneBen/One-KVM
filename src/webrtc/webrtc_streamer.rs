@@ -1694,6 +1694,10 @@ impl Default for WebRtcStreamer {
             config: RwLock::new(WebRtcStreamerConfig::default()),
             video_codec: RwLock::new(VideoCodecType::H264),
             video_pipeline: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            phone_video: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            phone_audio: RwLock::new(None),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             capture_device: RwLock::new(None),
             audio_enabled: RwLock::new(false),

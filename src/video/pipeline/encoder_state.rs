@@ -19,7 +19,9 @@ use hwcodec::rkmpp_native::{
     last_error_message as rkmpp_native_last_error, NativeMppConfig, NativeMppEncoder,
     NativeMppMjpegH264, NativeMppPixelFormat,
 };
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(feature = "rkmpp")]
+use tracing::warn;
 
 use super::shared::SharedVideoPipelineConfig;
 
