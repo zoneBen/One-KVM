@@ -393,15 +393,28 @@ const videoDetails = computed<StatusDetail[]>(() => {
   return details
 })
 
-const hidStatus = computed(() => getHidStatus(systemStore.hid, {
-  useWebRtc: videoMode.value !== 'mjpeg',
-  dataChannelReady: webrtc.dataChannelReady.value,
-  rtcConnecting: webrtc.isConnecting.value,
-  rtcConnected: webrtc.isConnected.value,
-  wsConnected: hidWs.connected.value,
-  wsNetworkError: hidWs.networkError.value,
-  wsHidUnavailable: hidWs.hidUnavailable.value,
-}))
+const hidStatus = computed(() => {
+  // Phone input is routed through the running scrcpy session, so the PC HID
+  // backend's availability must not gate or misreport the console.
+  if (target.value === 'phone') {
+    if (phoneStatus.value?.state === 'running' && webrtc.dataChannelReady.value) {
+      return 'connected'
+    }
+    if (phoneStatus.value?.state === 'starting' || webrtc.isConnecting.value) {
+      return 'connecting'
+    }
+    return 'disconnected'
+  }
+  return getHidStatus(systemStore.hid, {
+    useWebRtc: videoMode.value !== 'mjpeg',
+    dataChannelReady: webrtc.dataChannelReady.value,
+    rtcConnecting: webrtc.isConnecting.value,
+    rtcConnected: webrtc.isConnected.value,
+    wsConnected: hidWs.connected.value,
+    wsNetworkError: hidWs.networkError.value,
+    wsHidUnavailable: hidWs.hidUnavailable.value,
+  })
+})
 
 const hidQuickInfo = computed(() => {
   const hid = systemStore.hid
@@ -1685,7 +1698,11 @@ async function switchTarget(next: TargetMode) {
       const codec: VideoMode = normalizeServerMode(modeResp?.mode) ?? 'h264'
       videoMode.value = codec
       localStorage.setItem('videoMode', codec)
-      await connectWebRTCOnly(codec)
+      if (codec === 'mjpeg') {
+        refreshVideo()
+      } else {
+        await connectWebRTCOnly(codec)
+      }
     }
   } catch (error) {
     toast.error(t('console.phone.switchFailed'))
