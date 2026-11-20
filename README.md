@@ -69,7 +69,18 @@ sudo install -m 0644 /tmp/scrcpy-server-v3.3 /usr/local/share/scrcpy/scrcpy-serv
 /opt/one-kvm/scrcpy-server
 ```
 
-`scrcpy-server` 的版本必须与 One-KVM 使用的版本号一致，否则服务端会拒绝启动。
+`scrcpy-server` 的版本必须与 One-KVM 使用的版本号一致，否则服务端会拒绝启动。如果使用发行版自带的 scrcpy 包，请把 One-KVM 的版本号设置为 `scrcpy --version` 输出的版本，例如：
+
+```bash
+scrcpy --version
+# scrcpy 3.3.4 ...
+```
+
+则配置：
+
+```ini
+Environment=ONE_KVM_SCRCPY_SERVER_VERSION=3.3.4
+```
 
 ### 3. 运行库
 
