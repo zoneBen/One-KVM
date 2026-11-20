@@ -18,6 +18,7 @@ pub async fn health_check() -> Json<HealthResponse> {
 #[derive(Serialize)]
 pub struct SystemInfo {
     pub version: &'static str,
+    pub custom_edition: bool,
     pub initialized: bool,
     pub openwrt_system: bool,
     pub platform: PlatformCapabilities,
@@ -67,6 +68,7 @@ pub async fn system_info(State(state): State<Arc<AppState>>) -> Json<SystemInfo>
 
     Json(SystemInfo {
         version: env!("CARGO_PKG_VERSION"),
+        custom_edition: crate::update::CUSTOM_EDITION,
         initialized: config.initialized,
         openwrt_system: crate::web::openwrt_system::enabled(),
         platform: platform.clone(),

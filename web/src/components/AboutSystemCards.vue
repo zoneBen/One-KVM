@@ -88,7 +88,14 @@ const metrics = computed(() => {
   return result
 })
 const fields = computed(() => [
-  [t('settingsUi.softwareVersion'), system.version ? `One-KVM v${system.version}` : '—'],
+  [
+    t('settingsUi.softwareVersion'),
+    system.version
+      ? `One-KVM v${system.version}${
+          system.customEdition ? ` · ${t('settingsUi.customEdition')}` : ''
+        }`
+      : '—',
+  ],
   [t('settingsUi.operatingSystem'), host.value?.operating_system || '—'],
   [t('settingsUi.processor'), system.deviceInfo?.cpu_model || '—'],
   [t('settingsUi.architecture'), host.value?.architecture || '—'],

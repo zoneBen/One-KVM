@@ -29,7 +29,6 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from '@/components/ui/hover-card'
-import { Switch } from '@/components/ui/switch'
 import { Stepper, StepperItem, StepperSeparator, StepperTitle, StepperTrigger } from '@/components/ui/stepper'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -42,7 +41,6 @@ import {
   Keyboard,
   Check,
   HelpCircle,
-  Puzzle,
   AlertTriangle,
 } from 'lucide-vue-next'
 
@@ -77,14 +75,11 @@ const audioEnabled = ref(true)
 const platform = ref<PlatformCapabilities | null>(null)
 const isWindows = computed(() => platform.value?.mode === 'windows')
 const audioSupported = computed(() => platform.value?.audio.available ?? true)
-const totalSteps = 4
+const totalSteps = 3
 const EMPTY_SELECT_VALUE = '__one-kvm-empty-select-value__'
 
 const hidSelection = ref(selectionFrom())
 const hidSelectionValid = ref(false)
-
-const terminalEnabled = ref(false)
-const terminalAvailable = ref(false)
 
 // Encoder backend settings
 const encoderBackend = ref('auto')
@@ -156,7 +151,6 @@ const stepLabels = computed(() => [
   t('setup.stepAccount'),
   t('setup.stepAudioVideo'),
   t('setup.stepHid'),
-  t('setup.stepExtensions'),
 ])
 
 function validateUsername() {
@@ -224,7 +218,6 @@ onMounted(async () => {
   try {
     const status = await authStore.checkSetupStatus()
     platform.value = status.platform
-    terminalAvailable.value = status.platform.mode !== 'windows'
     if (!audioSupported.value) {
       audioEnabled.value = false
       audioDevice.value = '__none__'
@@ -248,10 +241,6 @@ onMounted(async () => {
       audioDevice.value = hdmiAudio?.name || result.audio[0]?.name || ''
     }
 
-    // Set extension availability from devices API
-    if (result.extensions) {
-      terminalAvailable.value = result.extensions.terminal_available
-    }
   } catch {
   }
 
@@ -408,8 +397,6 @@ async function handleSetup() {
     setupData.audio_device = audioDevice.value
   }
 
-  setupData.terminal_enabled = terminalEnabled.value
-
   const success = await authStore.setup(setupData)
 
   if (success) {
@@ -422,7 +409,7 @@ async function handleSetup() {
   loading.value = false
 }
 
-const stepIcons = [User, Video, Keyboard, Puzzle]
+const stepIcons = [User, Video, Keyboard]
 </script>
 
 <template>
@@ -704,33 +691,6 @@ const stepIcons = [User, Video, Keyboard, Puzzle]
             <HidDriverForm v-model="hidSelection" :platform="platform" @valid="hidSelectionValid = $event" />
           </div>
 
-          <!-- Step 4: Web Terminal Settings -->
-          <div v-else-if="step === 4" key="step4" class="space-y-4">
-            <h3 class="text-lg font-medium text-center">{{ t('setup.stepExtensions') }}</h3>
-            <p class="text-sm text-muted-foreground text-center">
-              {{ t('setup.extensionsDescription') }}
-            </p>
-
-            <!-- built-in web terminal -->
-            <div class="flex items-center justify-between p-4 rounded-lg border" :class="{ 'opacity-50': !terminalAvailable }">
-              <div class="space-y-1">
-                <div class="flex items-center gap-2">
-                  <Label class="text-base font-medium">{{ t('setup.ttydTitle') }}</Label>
-                  <span v-if="!terminalAvailable" class="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                    {{ t('setup.notInstalled') }}
-                  </span>
-                </div>
-                <p class="text-sm text-muted-foreground">
-                  {{ t('setup.ttydDescription') }}
-                </p>
-              </div>
-              <Switch v-model="terminalEnabled" :disabled="!terminalAvailable" />
-            </div>
-
-            <p class="text-xs text-muted-foreground text-center pt-2">
-              {{ t('setup.extensionsHint') }}
-            </p>
-          </div>
         </Transition>
 
         <!-- Error Message -->

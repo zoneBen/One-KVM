@@ -456,7 +456,6 @@ echo "$BACKUP"
                     "password": self.args.web_password,
                     "hid_backend": "none",
                     "msd_enabled": False,
-                    "ttyd_enabled": False,
                     "rustdesk_enabled": False,
                 },
             )

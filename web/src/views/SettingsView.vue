@@ -195,7 +195,9 @@ const isWindows = computed(() => systemStore.platform?.mode === 'windows')
 const otgSupported = computed(() => systemStore.platform?.otg.available === true)
 const msdSupported = computed(() => systemStore.platform?.msd.available === true)
 const usbResetSupported = computed(() => systemStore.platform?.mode === 'linux')
-const onlineUpgradeSupported = computed(() => systemStore.platform?.mode === 'linux')
+const onlineUpgradeSupported = computed(
+  () => systemStore.platform?.mode === 'linux' && !systemStore.customEdition,
+)
 
 const activeSection = ref<SettingsSectionId>('appearance')
 const loading = ref(false)
@@ -373,7 +375,9 @@ async function loadSectionData(section: SettingsSectionId) {
       ])
       return
     case 'about':
-      await Promise.all([loadUpdateOverview(), refreshUpdateStatus()])
+      if (onlineUpgradeSupported.value) {
+        await Promise.all([loadUpdateOverview(), refreshUpdateStatus()])
+      }
       return
   }
 }
@@ -2558,7 +2562,7 @@ onMounted(async () => {
 })
 
 watch(updateChannel, async () => {
-  if (activeSection.value === 'about') {
+  if (activeSection.value === 'about' && onlineUpgradeSupported.value) {
     await loadUpdateOverview()
   }
 })
@@ -6473,7 +6477,7 @@ watch(isWindows, () => {
           <div v-show="activeSection === 'about'" class="space-y-4">
             <AboutSystemCards :active="activeSection === 'about'" />
             <AuthorPromoCard />
-            <Card class="update-card">
+            <Card v-if="onlineUpgradeSupported" class="update-card">
               <CardHeader
                 ><CardTitle :help="t('settings.onlineUpgradeDesc')">{{
                   t('settings.onlineUpgrade')

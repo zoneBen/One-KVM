@@ -38,10 +38,7 @@ pub struct SetupRequest {
     pub hid_otg_profile: Option<String>,
     pub hid_otg_keyboard_leds: Option<bool>,
     pub msd_enabled: Option<bool>,
-    // Web terminal settings
-    pub terminal_enabled: Option<bool>,
     // Extension settings
-    pub ttyd_enabled: Option<bool>,
     pub rustdesk_enabled: Option<bool>,
 }
 
@@ -179,21 +176,9 @@ pub async fn setup_init(
             }
             config.enforce_invariants();
 
-            // Web terminal settings. `ttyd_enabled` is the legacy field sent by
-            // older clients; map it to the built-in terminal as well.
-            if let Some(enabled) = req.terminal_enabled {
-                config.terminal.enabled = enabled;
-                // Windows has no built-in PTY backend yet; keep ttyd as the
-                // fallback and mirror the choice into its legacy config.
-                #[cfg(windows)]
-                {
-                    config.extensions.ttyd.enabled = enabled;
-                }
-            }
-            if let Some(enabled) = req.ttyd_enabled {
-                config.extensions.ttyd.enabled = enabled;
-                config.terminal.enabled = enabled;
-            }
+            // The built-in PTY terminal no longer needs any installation or
+            // setup-time daemon start. It remains disabled by default and is
+            // configured later in Settings.
             if let Some(enabled) = req.rustdesk_enabled {
                 config.rustdesk.enabled = enabled;
             }
@@ -211,21 +196,6 @@ pub async fn setup_init(
         new_config.terminal.enabled,
         new_config.rustdesk.enabled
     );
-
-    // The built-in PTY terminal needs no daemon on Unix. On Windows keep the
-    // legacy ttyd fallback working when it was explicitly enabled.
-    #[cfg(windows)]
-    if new_config.extensions.ttyd.enabled {
-        if let Err(e) = state
-            .extensions
-            .start(crate::extensions::ExtensionId::Ttyd, &new_config.extensions)
-            .await
-        {
-            tracing::warn!("Failed to start ttyd during setup: {}", e);
-        } else {
-            tracing::info!("ttyd started during setup");
-        }
-    }
 
     // Start RustDesk if enabled
     if new_config.rustdesk.enabled {

@@ -143,6 +143,7 @@ export const systemApi = {
   info: () =>
     request<{
       version: string
+      custom_edition: boolean
       initialized: boolean
       openwrt_system: boolean
       platform: PlatformCapabilities
@@ -187,7 +188,6 @@ export const systemApi = {
     msd_enabled?: boolean
     encoder_backend?: string
     audio_device?: string
-    terminal_enabled?: boolean
     rustdesk_enabled?: boolean
   }) =>
     request<{ success: boolean; message?: string }>('/setup/init', {

@@ -162,6 +162,7 @@ export interface DeviceInfoEvent {
 
 export const useSystemStore = defineStore('system', () => {
   const version = ref<string>('')
+  const customEdition = ref(false)
   const openwrtSystem = ref(false)
   const platform = ref<PlatformCapabilities | null>(null)
   const capabilities = ref<SystemCapabilities | null>(null)
@@ -186,6 +187,7 @@ export const useSystemStore = defineStore('system', () => {
     try {
       const info = await systemApi.info()
       version.value = info.version
+      customEdition.value = info.custom_edition === true
       openwrtSystem.value = info.openwrt_system === true
       platform.value = info.platform
       capabilities.value = info.capabilities
@@ -453,6 +455,7 @@ export const useSystemStore = defineStore('system', () => {
 
   return {
     version,
+    customEdition,
     openwrtSystem,
     platform,
     capabilities,

@@ -14,6 +14,12 @@ use crate::state::ShutdownAction;
 
 const DEFAULT_UPDATE_BASE_URL: &str = "https://update.one-kvm.cn";
 
+/// This fork is distributed as a customized edition. Online upgrades are
+/// disabled so an upstream binary cannot replace the custom build.
+pub const CUSTOM_EDITION: bool = true;
+pub const CUSTOM_EDITION_UPDATE_DISABLED: &str =
+    "当前为定制版，不支持在线升级，请联系设备提供方获取更新";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateChannel {
@@ -142,6 +148,11 @@ impl UpdateService {
     }
 
     pub async fn overview(&self, channel: UpdateChannel) -> Result<UpdateOverviewResponse> {
+        if CUSTOM_EDITION {
+            return Err(AppError::ServiceUnavailable(
+                CUSTOM_EDITION_UPDATE_DISABLED.to_string(),
+            ));
+        }
         let (channels, releases) = self.fetch_manifests().await?;
 
         let current_version = parse_version(&current_version_for_update())?;
@@ -199,6 +210,11 @@ impl UpdateService {
         req: UpgradeRequest,
         shutdown_tx: broadcast::Sender<ShutdownAction>,
     ) -> Result<()> {
+        if CUSTOM_EDITION {
+            return Err(AppError::ServiceUnavailable(
+                CUSTOM_EDITION_UPDATE_DISABLED.to_string(),
+            ));
+        }
         if req.channel.is_none() == req.target_version.is_none() {
             return Err(AppError::BadRequest(
                 "Provide exactly one of channel or target_version".to_string(),

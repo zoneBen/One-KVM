@@ -879,7 +879,7 @@ export default {
     environmentSubtitle: 'Diagnose USB OTG and video encoding',
     otherSubtitle: 'Additional hardware controls and USB device maintenance',
     logsSubtitle: 'Watch runtime logs and submit a problem report',
-    aboutSubtitle: 'Online upgrade and version information',
+    aboutSubtitle: 'Version and system information',
     extTtydSubtitle: 'Open a host Shell terminal in the browser',
     thirdPartyAccessSubtitle: 'Configure external RustDesk, VNC, RTSP, and Redfish access',
     extRemoteAccessSubtitle: 'Remote access through NAT-traversal services',

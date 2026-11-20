@@ -877,7 +877,7 @@ export default {
     environmentSubtitle: '诊断 USB OTG 与视频编码环境',
     otherSubtitle: '其他系统硬件控制与 USB 设备维护',
     logsSubtitle: '实时查看运行日志并提交问题报告',
-    aboutSubtitle: '在线升级与版本信息',
+    aboutSubtitle: '版本与系统信息',
     extTtydSubtitle: '在浏览器中打开本机 Shell 终端',
     thirdPartyAccessSubtitle: '集中配置 RustDesk、VNC、RTSP 与 Redfish 外部接入',
     extRemoteAccessSubtitle: '通过内网穿透服务实现远程访问',

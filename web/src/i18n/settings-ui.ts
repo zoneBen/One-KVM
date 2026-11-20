@@ -34,6 +34,7 @@ export const settingsUiZh = {
   systemInfoHelp:
     '报告问题时，可提供软件版本、系统、处理器、架构、内核与主机名，方便定位设备环境。',
   softwareVersion: '软件版本',
+  customEdition: '定制版',
   operatingSystem: '操作系统',
   processor: '处理器',
   architecture: '系统架构',
@@ -98,6 +99,7 @@ export const settingsUiEn = {
   systemInfoHelp:
     'Include the software version, operating system, processor, architecture, kernel and hostname when reporting an issue.',
   softwareVersion: 'Software version',
+  customEdition: 'Custom Edition',
   operatingSystem: 'Operating system',
   processor: 'Processor',
   architecture: 'Architecture',
